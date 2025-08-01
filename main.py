@@ -6,8 +6,24 @@ from datetime import datetime
 
 # Настройки обработки
 MIN_AREA = 100  # Минимальная площадь контура профиля
+CIRCULARITY_THRESH = 0.7  # Порог круглости (1.0 - идеальный круг)
 CANNY_THRESH = (50, 150)  # Пороги для детекции краёв
 BLUR_SIZE = (5, 5)  # Размер размытия
+
+
+def is_circular(contour):
+    """Проверяет, насколько контур близок к кругу"""
+    area = cv2.contourArea(contour)
+    if area == 0:
+        return False
+
+    perimeter = cv2.arcLength(contour, True)
+    if perimeter == 0:
+        return False
+
+    # Вычисляем круглость
+    circularity = 4 * np.pi * area / (perimeter ** 2)
+    return circularity > CIRCULARITY_THRESH
 
 
 def process_image(input_path, output_dir):
@@ -32,14 +48,18 @@ def process_image(input_path, output_dir):
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     # Фильтрация контуров
-    valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_AREA]
+    valid_contours = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > MIN_AREA and is_circular(cnt):
+            valid_contours.append(cnt)
 
     # Визуализация
     result_img = img.copy()
     cv2.drawContours(result_img, valid_contours, -1, (0, 255, 0), 2)
 
     # Добавляем текст с количеством
-    cv2.putText(result_img, f"Profiles: {len(valid_contours)}", (10, 30),
+    cv2.putText(result_img, f"Circles: {len(valid_contours)}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
     # Сохраняем результат
@@ -62,11 +82,11 @@ def main():
     for img_path in input_dir.glob("*.*"):
         if img_path.suffix.lower() in ('.jpg', '.jpeg', '.png'):
             count = process_image(img_path, output_dir)
-            print(f"📊 {img_path.name}: {count} профилей")
+            print(f"📊 {img_path.name}: {count} кругов")
             total += count
 
     print(f"\n✅ Готово! Обработано изображений: {len(list(input_dir.glob('*.*')))}")
-    print(f"📦 Всего профилей обнаружено: {total}")
+    print(f"📦 Всего кругов обнаружено: {total}")
 
 
 if __name__ == "__main__":
