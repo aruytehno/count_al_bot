@@ -7,6 +7,7 @@ import logging
 import numpy as np
 from io import BytesIO
 from PIL import Image, UnidentifiedImageError
+from roboflow import Roboflow
 
 # Настройка логирования
 logging.basicConfig(
@@ -134,7 +135,14 @@ def image_to_bytes(img):
     byte_io.seek(0)
     return byte_io
 
+def download_dataset():
+    rf = Roboflow(api_key=os.getenv("ROBOFLOW_API_KEY"))
+    project = rf.workspace("austral").project("com-aus-3")
+    dataset = project.version(1).download("yolov8")
+    print('dataset загружен')
+
 
 if __name__ == "__main__":
+    download_dataset()
     logger.info("Бот запущен")
     bot.infinity_polling()
