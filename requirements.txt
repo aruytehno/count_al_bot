@@ -1,0 +1,4 @@
+ultralytics==8.3.28
+opencv-python==4.10.0.84
+telebot==0.0.5
+python-dotenv==1.0.0
