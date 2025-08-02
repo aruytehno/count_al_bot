@@ -18,11 +18,9 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Конфигурация моделей
-MODELS = {
-    "rectangle": "models/rectangle.pt",
-}
-models_cache = {}
+# Конфигурация модели (теперь используем стандартную YOLOv8n)
+MODEL_NAME = "yolov8n.pt"
+model_cache = None  # Глобальная переменная для кэширования модели
 
 # Инициализация бота
 bot = telebot.TeleBot(os.getenv('BOT_TOKEN'))
@@ -64,13 +62,13 @@ def handle_photo(message):
         img = read_image(file_bytes)
 
         # Ленивая загрузка модели
-        pipe_type = "rectangle"
-        if pipe_type not in models_cache:
-            models_cache[pipe_type] = YOLO(MODELS[pipe_type])
-            logger.info(f"Модель {pipe_type} успешно загружена")
+        global model_cache
+        if model_cache is None:
+            model_cache = YOLO(MODEL_NAME)
+            logger.info(f"Модель {MODEL_NAME} успешно загружена")
 
-        # Детекция труб
-        result_img, count = detect_pipes(img, pipe_type)
+        # Детекция объектов
+        result_img, count = detect_objects(img)
 
         # Отправка результата с очисткой буфера
         byte_io = image_to_bytes(result_img)
@@ -78,14 +76,14 @@ def handle_photo(message):
             bot.send_photo(
                 chat_id,
                 byte_io,
-                caption=f"✅ Результат: найдено труб - {count}"
+                caption=f"✅ Результат: найдено объектов - {count}"
             )
         finally:
             byte_io.close()
 
     except Exception as e:
         error_msg = f"⚠️ Ошибка обработки: {str(e)}"
-        logger.error(f"Chat {chat_id}: {error_msg}")
+        logger.error(f"Chat {chat_id}: {error_msg}", exc_info=True)
         bot.send_message(chat_id, error_msg)
 
 
@@ -102,12 +100,12 @@ def read_image(file_bytes):
         raise ValueError("Неподдерживаемый формат изображения")
 
 
-def detect_pipes(image, pipe_type):
-    """Обработка изображения с помощью YOLO"""
-    results = models_cache[pipe_type](
+def detect_objects(image):
+    """Обработка изображения с помощью YOLOv8n"""
+    results = model_cache(
         image,
-        imgsz=1024,
-        conf=0.6,
+        imgsz=640,  # Оптимальное разрешение для nano
+        conf=0.5,   # Порог уверенности
         verbose=False
     )
 
@@ -135,14 +133,19 @@ def image_to_bytes(img):
     byte_io.seek(0)
     return byte_io
 
+
 def download_dataset():
+    """Загрузка датасета (оставлено для совместимости)"""
     rf = Roboflow(api_key=os.getenv("ROBOFLOW_API_KEY"))
     project = rf.workspace("austral").project("com-aus-3")
     dataset = project.version(1).download("yolov8")
-    print('dataset загружен')
+    logger.info('Датасет загружен')
 
 
 if __name__ == "__main__":
     download_dataset()
     logger.info("Бот запущен")
+    # Для стандартной YOLOv8n датасет не требуется, но оставляем функцию
+    if os.getenv("DOWNLOAD_DATASET", "False").lower() == "true":
+        download_dataset()
     bot.infinity_polling()
