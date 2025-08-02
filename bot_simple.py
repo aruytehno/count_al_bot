@@ -3,11 +3,12 @@ import telebot
 from ultralytics import YOLO
 import cv2
 from dotenv import load_dotenv
-import uuid
 import logging
 import numpy as np
 from io import BytesIO
 from PIL import Image, UnidentifiedImageError
+from functools import lru_cache
+import threading
 
 # Настройка логирования
 logging.basicConfig(
@@ -18,28 +19,61 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Конфигурация моделей
-MODELS = {
-    "round": "models/rou.pt",
-    "rectangle": "models/rectangle.pt"
-}
 
-# Инициализация бота
-bot = telebot.TeleBot(os.getenv('BOT_TOKEN'))
-models_cache = {}
+class ModelLoader:
+    """Класс для управления загрузкой и кэшированием моделей"""
+    _instance = None
+    _lock = threading.Lock()
 
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialize()
+        return cls._instance
 
-# Загрузка моделей при старте
-def load_models():
-    for pipe_type, path in MODELS.items():
+    def _initialize(self):
+        self.models = {
+            "round": "models/rou.pt",
+            "rectangle": "models/rectangle.pt"
+        }
+        self.cache = {}
+        self._load_all_models()
+
+    def _load_all_models(self):
+        """Параллельная загрузка моделей при старте"""
+        threads = []
+        for name, path in self.models.items():
+            thread = threading.Thread(
+                target=self._load_single_model,
+                args=(name, path),
+                daemon=True
+            )
+            threads.append(thread)
+            thread.start()
+
+        for thread in threads:
+            thread.join()
+
+    def _load_single_model(self, name, path):
+        """Загрузка одной модели с обработкой ошибок"""
         try:
-            models_cache[pipe_type] = YOLO(path)
-            logger.info(f"Модель {pipe_type} успешно загружена")
+            model = YOLO(path)
+            self.cache[name] = model
+            logger.info(f"Модель {name} успешно загружена")
         except Exception as e:
-            logger.error(f"Ошибка загрузки модели {pipe_type}: {str(e)}")
+            logger.error(f"Ошибка загрузки модели {name}: {str(e)}")
+            self.cache[name] = None
+
+    def get_model(self, name):
+        """Получение модели из кэша"""
+        return self.cache.get(name)
 
 
-load_models()
+# Инициализация бота и моделей
+bot = telebot.TeleBot(os.getenv('BOT_TOKEN'))
+model_loader = ModelLoader()
 
 
 @bot.message_handler(commands=['start', 'help'])
@@ -68,8 +102,9 @@ def send_welcome(message):
 def handle_pipe_type(message):
     chat_id = message.chat.id
     pipe_type = "round" if message.text == "Круглые" else "rectangle"
+    model = model_loader.get_model(pipe_type)
 
-    if pipe_type not in models_cache:
+    if model is None:
         bot.send_message(chat_id, "⚠️ Модель для обработки недоступна, попробуйте позже")
         return
 
@@ -120,18 +155,19 @@ def process_photo(message, pipe_type):
 
     except Exception as e:
         error_msg = f"⚠️ Ошибка обработки: {str(e)}"
-        logger.error(f"Chat {chat_id}: {error_msg}")
+        logger.error(f"Chat {chat_id}: {error_msg}", exc_info=True)
         bot.send_message(chat_id, error_msg)
         send_welcome(message)
 
 
+@lru_cache(maxsize=32)
 def read_image(file_bytes):
-    """Чтение изображения из байтов с проверкой формата"""
+    """Чтение изображения из байтов с кэшированием"""
     try:
         img = np.array(Image.open(BytesIO(file_bytes)))
-        if len(img.shape) == 2:  # Grayscale to RGB
+        if len(img.shape) == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-        elif img.shape[2] == 4:  # RGBA to RGB
+        elif img.shape[2] == 4:
             img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
         return img
     except UnidentifiedImageError:
@@ -140,12 +176,15 @@ def read_image(file_bytes):
 
 def detect_pipes(image, pipe_type):
     """Обработка изображения с помощью YOLO"""
-    # Детекция
-    results = models_cache[pipe_type](
+    model = model_loader.get_model(pipe_type)
+    if model is None:
+        raise RuntimeError(f"Модель {pipe_type} не загружена")
+
+    results = model(
         image,
         imgsz=1024,
         conf=0.6,
-        verbose=False  # Отключаем лишние логи
+        verbose=False
     )
 
     # Визуализация результатов
