@@ -17,16 +17,11 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Загрузка модели прямоугольных труб
-MODEL_PATH = "models/rectangle.pt"
-model = None
-
-try:
-    model = YOLO(MODEL_PATH)
-    logger.info("Модель rectangle.pt успешно загружена")
-except Exception as e:
-    logger.error(f"Ошибка загрузки модели: {str(e)}")
-    exit(1)
+# Конфигурация моделей
+MODELS = {
+    "rectangle": "models/rectangle.pt",
+}
+models_cache = {}
 
 # Инициализация бота
 bot = telebot.TeleBot(os.getenv('BOT_TOKEN'))
@@ -37,8 +32,8 @@ def send_welcome(message):
     welcome_text = (
         "👋 Добро пожаловать в PipeDetectorBot!\n\n"
         "📸 Отправьте фото труб для анализа.\n"
-        "Бот автоматически определит количество квадратных труб.\n\n"
-        "Поддерживаемые форматы: JPEG, PNG"
+        "Бот автоматически определит количество.\n\n"
+        "Поддерживаемые форматы: JPEG, PNG (максимальный размер 10MB)"
     )
     bot.send_message(message.chat.id, welcome_text)
 
@@ -59,21 +54,33 @@ def handle_photo(message):
         else:
             raise ValueError("Пожалуйста, отправьте изображение")
 
-        # Скачивание и обработка
+        # Скачивание с проверкой размера
         file_info = bot.get_file(file_id)
+        if file_info.file_size > 10 * 1024 * 1024:
+            raise ValueError("Файл слишком большой (максимальный размер 10MB)")
+
         file_bytes = bot.download_file(file_info.file_path)
         img = read_image(file_bytes)
 
-        # Детекция труб
-        result_img, count = detect_pipes(img)
+        # Ленивая загрузка модели
+        pipe_type = "rectangle"
+        if pipe_type not in models_cache:
+            models_cache[pipe_type] = YOLO(MODELS[pipe_type])
+            logger.info(f"Модель {pipe_type} успешно загружена")
 
-        # Отправка результата
-        result_bytes = image_to_bytes(result_img)
-        bot.send_photo(
-            chat_id,
-            result_bytes,
-            caption=f"✅ Результат: найдено труб - {count}"
-        )
+        # Детекция труб
+        result_img, count = detect_pipes(img, pipe_type)
+
+        # Отправка результата с очисткой буфера
+        byte_io = image_to_bytes(result_img)
+        try:
+            bot.send_photo(
+                chat_id,
+                byte_io,
+                caption=f"✅ Результат: найдено труб - {count}"
+            )
+        finally:
+            byte_io.close()
 
     except Exception as e:
         error_msg = f"⚠️ Ошибка обработки: {str(e)}"
@@ -94,16 +101,16 @@ def read_image(file_bytes):
         raise ValueError("Неподдерживаемый формат изображения")
 
 
-def detect_pipes(image):
+def detect_pipes(image, pipe_type):
     """Обработка изображения с помощью YOLO"""
-    results = model(
+    results = models_cache[pipe_type](
         image,
         imgsz=1024,
         conf=0.6,
         verbose=False
     )
 
-    # Визуализация результатов (возвращает уже PIL.Image)
+    # Визуализация результатов
     result_img = results[0].plot(
         line_width=2,
         font_size=0.8,
@@ -114,12 +121,12 @@ def detect_pipes(image):
     # Подсчёт объектов
     count = len(results[0].boxes)
 
-    return result_img, count  # Теперь result_img - это PIL.Image
+    return result_img, count
 
 
 def image_to_bytes(img):
     """Конвертация изображения в байты"""
-    if isinstance(img, np.ndarray):  # Если пришел numpy array
+    if isinstance(img, np.ndarray):
         img = Image.fromarray(img)
 
     byte_io = BytesIO()
