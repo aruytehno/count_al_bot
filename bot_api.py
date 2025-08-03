@@ -89,7 +89,30 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         detections = sv.Detections.from_inference(result)
         object_count = len(detections)
 
-        # Визуализируем результаты с кастомным стилем
+        # ────────────────────────────────────────────────────────────────────
+        # ЗЕЛЁНЫЙ ФОН ПОД КАЖДЫЙ BOX:
+        # ────────────────────────────────────────────────────────────────────
+
+        # Создаём копию для наложения
+        overlay = image.copy()
+        alpha = 0.3  # степень прозрачности (0.0 – совсем прозрачно, 1.0 – сплошной)
+
+        # Для каждого бокса рисуем заполненный зелёный прямоугольник
+        for x1, y1, x2, y2 in detections.xyxy:
+            x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+            cv2.rectangle(
+                overlay,
+                (x1, y1),
+                (x2, y2),
+                (50, 255, 50),  # салатовый BGR
+                thickness=-1    # заполнение
+            )
+
+        # Накладываем overlay на оригинал
+        cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
+        # ────────────────────────────────────────────────────────────────────
+
+        # Визуализируем результаты с кастомным стилем (рамки уже будут поверх заливки)
         box_annotator = CustomAnnotator.create_box_annotator()
         annotated_image = box_annotator.annotate(
             scene=image,
