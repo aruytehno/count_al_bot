@@ -87,6 +87,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         # Обрабатываем результаты через supervision
         detections = sv.Detections.from_inference(result)
+        object_count = len(detections)
 
         # Визуализируем результаты с кастомным стилем
         box_annotator = CustomAnnotator.create_box_annotator()
@@ -95,22 +96,28 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             detections=detections
         )
 
+        # Добавляем подпись с количеством объектов
+        caption = f"✅ Результат: найдено объектов - {object_count}"
+
         # Конвертируем в формат для Telegram
         _, img_encoded = cv2.imencode('.jpg', annotated_image)
         img_bytes = img_encoded.tobytes()
 
-        # Отправляем результат
-        await update.message.reply_photo(photo=BytesIO(img_bytes))
+        # Отправляем результат с подписью
+        await update.message.reply_photo(
+            photo=BytesIO(img_bytes),
+            caption=caption
+        )
 
-        # Формируем текстовый отчет
-        if len(detections) > 0:
+        # Формируем текстовый отчет по классам
+        if object_count > 0:
             class_names = [
                 result.predictions[i].class_name
                 for i in detections.class_id
             ]
             counts = {cls: class_names.count(cls) for cls in set(class_names)}
             report = "\n".join([f"{cls}: {count}" for cls, count in counts.items()])
-            await update.message.reply_text(f"Обнаружены объекты:\n{report}")
+            # await update.message.reply_text(f"Детализация по классам:\n{report}")
         else:
             await update.message.reply_text("⚠️ На изображении не обнаружено объектов")
 
