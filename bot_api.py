@@ -38,6 +38,17 @@ logger = logging.getLogger(__name__)
 model = get_model(model_id=MODEL_ID, api_key=ROBOFLOW_API_KEY)
 
 
+# Кастомный стиль для аннотаций
+class CustomAnnotator:
+    @staticmethod
+    def create_box_annotator():
+        """Создает аннотатор с салатовыми bounding boxes без подписей"""
+        return sv.BoxAnnotator(
+            color=sv.Color(50, 255, 50),  # Салатовый цвет в BGR (50, 255, 50)
+            thickness=2,  # Толщина линий
+        )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start"""
     try:
@@ -77,14 +88,12 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Обрабатываем результаты через supervision
         detections = sv.Detections.from_inference(result)
 
-        # Визуализируем результаты
-        bounding_box_annotator = sv.BoxAnnotator()
-        label_annotator = sv.LabelAnnotator()
-
-        annotated_image = bounding_box_annotator.annotate(
-            scene=image, detections=detections)
-        annotated_image = label_annotator.annotate(
-            scene=annotated_image, detections=detections)
+        # Визуализируем результаты с кастомным стилем
+        box_annotator = CustomAnnotator.create_box_annotator()
+        annotated_image = box_annotator.annotate(
+            scene=image,
+            detections=detections
+        )
 
         # Конвертируем в формат для Telegram
         _, img_encoded = cv2.imencode('.jpg', annotated_image)
