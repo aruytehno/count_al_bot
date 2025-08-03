@@ -9,6 +9,17 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from inference import get_model
 import supervision as sv
 from pathlib import Path
+import time
+
+# Отключаем все ненужные модели для подавления предупреждений
+for model_env in [
+    'PALIGEMMA_ENABLED', 'FLORENCE2_ENABLED', 'QWEN_2_5_ENABLED',
+    'CORE_MODEL_SAM_ENABLED', 'CORE_MODEL_SAM2_ENABLED', 'CORE_MODEL_CLIP_ENABLED',
+    'CORE_MODEL_GAZE_ENABLED', 'SMOLVLM2_ENABLED', 'DEPTH_ESTIMATION_ENABLED',
+    'MOONDREAM2_ENABLED', 'CORE_MODEL_TROCR_ENABLED', 'CORE_MODEL_GROUNDINGDINO_ENABLED',
+    'CORE_MODEL_YOLO_WORLD_ENABLED', 'CORE_MODEL_PE_ENABLED'
+]:
+    os.environ[model_env] = 'False'
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -29,9 +40,12 @@ model = get_model(model_id=MODEL_ID, api_key=ROBOFLOW_API_KEY)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start"""
-    await update.message.reply_text(
-        "Привет! Отправь мне изображение, и я проанализирую его с помощью модели компьютерного зрения."
-    )
+    try:
+        await update.message.reply_text(
+            "Привет! Отправь мне изображение, и я проанализирую его с помощью модели компьютерного зрения."
+        )
+    except Exception as e:
+        logger.error(f"Ошибка в команде /start: {str(e)}")
 
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -48,11 +62,20 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Читаем изображение с помощью OpenCV
         image = cv2.imread(str(file_path))
 
-        # Выполняем инференс
-        results = model.infer(image)[0]
+        # Ресайз изображения для обработки
+        max_size = 1024
+        height, width = image.shape[:2]
+        if max(height, width) > max_size:
+            scale = max_size / max(height, width)
+            image = cv2.resize(image, (int(width * scale), int(height * scale)))
 
-        # Обрабатываем результаты
-        detections = sv.Detections.from_inference(results)
+        # Выполняем инференс
+        start_time = time.time()
+        result = model.infer(image)[0]
+        logger.info(f"Инференс выполнен за {time.time() - start_time:.2f} сек")
+
+        # Обрабатываем результаты через supervision
+        detections = sv.Detections.from_inference(result)
 
         # Визуализируем результаты
         bounding_box_annotator = sv.BoxAnnotator()
@@ -71,9 +94,12 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_photo(photo=BytesIO(img_bytes))
 
         # Формируем текстовый отчет
-        if hasattr(results, 'predictions') and results.predictions:
-            classes = [p.class_name for p in results.predictions]
-            counts = {cls: classes.count(cls) for cls in set(classes)}
+        if len(detections) > 0:
+            class_names = [
+                result.predictions[i].class_name
+                for i in detections.class_id
+            ]
+            counts = {cls: class_names.count(cls) for cls in set(class_names)}
             report = "\n".join([f"{cls}: {count}" for cls, count in counts.items()])
             await update.message.reply_text(f"Обнаружены объекты:\n{report}")
         else:
@@ -81,26 +107,44 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     except Exception as e:
         logger.error(f"Ошибка при обработке изображения: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"⚠️ Произошла ошибка: {str(e)}")
+        try:
+            await update.message.reply_text(f"⚠️ Произошла ошибка при обработке изображения: {str(e)}")
+        except Exception as inner_e:
+            logger.error(f"Ошибка при отправке сообщения об ошибке: {str(inner_e)}")
 
     finally:
         # Удаляем временный файл
-        if file_path and Path(file_path).exists():
-            Path(file_path).unlink()
+        try:
+            if file_path and Path(file_path).exists():
+                Path(file_path).unlink()
+        except Exception as e:
+            logger.error(f"Ошибка при удалении временного файла: {str(e)}")
 
 
 def main() -> None:
     """Запуск бота"""
-    # Создаем приложение
+    # Создаем приложение с настройками для работы в нестабильных сетях
     app = Application.builder().token(BOT_TOKEN).build()
 
     # Регистрируем обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
 
-    # Запускаем бота
+    # Запускаем бота с обработкой сетевых ошибок
     logger.info("Бот запущен...")
-    app.run_polling()
+
+    # Повторные попытки подключения при сетевых ошибках
+    while True:
+        try:
+            app.run_polling(
+                poll_interval=1.0,
+                timeout=30,
+                drop_pending_updates=True
+            )
+        except Exception as e:
+            logger.error(f"Критическая ошибка в приложении: {str(e)}")
+            logger.info("Перезапуск бота через 10 секунд...")
+            time.sleep(10)
 
 
 if __name__ == '__main__':
