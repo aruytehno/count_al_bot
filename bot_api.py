@@ -1,6 +1,5 @@
 import os
 import logging
-import base64
 import cv2
 import numpy as np
 from io import BytesIO
@@ -9,6 +8,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from inference import get_model
 import supervision as sv
+from pathlib import Path
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -39,6 +39,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user = update.message.from_user
     logger.info("Изображение от %s: %s", user.first_name, user.id)
 
+    file_path = None
     try:
         # Скачиваем фото
         photo_file = await update.message.photo[-1].get_file()
@@ -70,9 +71,8 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_photo(photo=BytesIO(img_bytes))
 
         # Формируем текстовый отчет
-        predictions = results.get("predictions", [])
-        if predictions:
-            classes = [p["class"] for p in predictions]
+        if hasattr(results, 'predictions') and results.predictions:
+            classes = [p.class_name for p in results.predictions]
             counts = {cls: classes.count(cls) for cls in set(classes)}
             report = "\n".join([f"{cls}: {count}" for cls, count in counts.items()])
             await update.message.reply_text(f"Обнаружены объекты:\n{report}")
@@ -85,8 +85,8 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     finally:
         # Удаляем временный файл
-        if 'file_path' in locals() and file_path.exists():
-            file_path.unlink()
+        if file_path and Path(file_path).exists():
+            Path(file_path).unlink()
 
 
 def main() -> None:
