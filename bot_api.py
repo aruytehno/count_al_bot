@@ -1,11 +1,14 @@
 import os
 import logging
 import base64
+import cv2
+import numpy as np
 from io import BytesIO
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from inference_sdk import InferenceHTTPClient, InferenceConfiguration
+from inference import get_model
+import supervision as sv
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -20,19 +23,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Инициализация клиента Roboflow
-CLIENT = InferenceHTTPClient(
-    api_url="https://infer.roboflow.com",
-    api_key=ROBOFLOW_API_KEY
-)
-
-# Конфигурация для получения изображения с аннотациями
-CONFIG = InferenceConfiguration(
-    format="image",  # Получаем только изображение с разметкой
-    confidence_threshold=0.5,  # Порог уверенности
-    visualize_labels=True,  # Показывать метки классов
-    visualize_predictions=True  # Визуализировать предсказания
-)
+# Инициализация модели Roboflow
+model = get_model(model_id=MODEL_ID, api_key=ROBOFLOW_API_KEY)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -47,34 +39,54 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user = update.message.from_user
     logger.info("Изображение от %s: %s", user.first_name, user.id)
 
-    # Скачиваем фото
-    photo_file = await update.message.photo[-1].get_file()
-    image_bytes = await photo_file.download_as_bytearray()
-
-    # Отправляем запрос в Roboflow API
     try:
-        with CLIENT.use_configuration(CONFIG):
-            result = await CLIENT.infer_async(image_bytes, model_id=MODEL_ID)
-    except Exception as e:
-        logger.error(f"Ошибка Roboflow API: {e}")
-        await update.message.reply_text("⚠️ Произошла ошибка при обработке изображения")
-        return
+        # Скачиваем фото
+        photo_file = await update.message.photo[-1].get_file()
+        file_path = await photo_file.download_to_drive()
 
-    # Декодируем и отправляем результат
-    try:
-        if isinstance(result, bytes):
-            # Для формата 'image'
-            await update.message.reply_photo(photo=BytesIO(result))
+        # Читаем изображение с помощью OpenCV
+        image = cv2.imread(str(file_path))
+
+        # Выполняем инференс
+        results = model.infer(image)[0]
+
+        # Обрабатываем результаты
+        detections = sv.Detections.from_inference(results)
+
+        # Визуализируем результаты
+        bounding_box_annotator = sv.BoxAnnotator()
+        label_annotator = sv.LabelAnnotator()
+
+        annotated_image = bounding_box_annotator.annotate(
+            scene=image, detections=detections)
+        annotated_image = label_annotator.annotate(
+            scene=annotated_image, detections=detections)
+
+        # Конвертируем в формат для Telegram
+        _, img_encoded = cv2.imencode('.jpg', annotated_image)
+        img_bytes = img_encoded.tobytes()
+
+        # Отправляем результат
+        await update.message.reply_photo(photo=BytesIO(img_bytes))
+
+        # Формируем текстовый отчет
+        predictions = results.get("predictions", [])
+        if predictions:
+            classes = [p["class"] for p in predictions]
+            counts = {cls: classes.count(cls) for cls in set(classes)}
+            report = "\n".join([f"{cls}: {count}" for cls, count in counts.items()])
+            await update.message.reply_text(f"Обнаружены объекты:\n{report}")
         else:
-            # Для формата 'image_and_json'
-            base64_data = result["visualization"].split(",")[1]
-            image_data = base64.b64decode(base64_data)
-            await update.message.reply_photo(photo=BytesIO(image_data))
+            await update.message.reply_text("⚠️ На изображении не обнаружено объектов")
 
-        await update.message.reply_text("✅ Анализ завершен!")
     except Exception as e:
-        logger.error(f"Ошибка обработки результата: {e}")
-        await update.message.reply_text("⚠️ Ошибка при формировании результата")
+        logger.error(f"Ошибка при обработке изображения: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Произошла ошибка: {str(e)}")
+
+    finally:
+        # Удаляем временный файл
+        if 'file_path' in locals() and file_path.exists():
+            file_path.unlink()
 
 
 def main() -> None:
